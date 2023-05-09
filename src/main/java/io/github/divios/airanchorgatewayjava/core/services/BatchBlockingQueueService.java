@@ -26,7 +26,7 @@ public class BatchBlockingQueueService {
     }
 
     @Async
-    @Scheduled(fixedRate = 100L, initialDelay = 2000L)
+    @Scheduled(fixedDelay = 100L, initialDelay = 200L)
     void cycler() {
         List<BatchTransactionRequest> requests = new LinkedList<>();
 

@@ -39,9 +39,16 @@ public class MessageProcessorService {
     }
 
     private void validateRequest(TransactionRequest request) {
+
+        var senderPubKey = request.getHeader().getSender_public_key();
+        var certPubKey = request.getHeader().getCertificate_request().getHeader().getSender_public_key();
+
+        if (!senderPubKey.equals(certPubKey))
+            throw new InvalidRequestException("sender pub key does not match certificate request sender");
+
         Secp256k1PublicKey pubKey;
         try {
-            pubKey = Secp256k1PublicKey.fromHex(request.getHeader().getSender_public_key());
+            pubKey = Secp256k1PublicKey.fromHex(senderPubKey);
 
         } catch (Exception e) {
             throw new InvalidRequestException("Invalid request pub key " +

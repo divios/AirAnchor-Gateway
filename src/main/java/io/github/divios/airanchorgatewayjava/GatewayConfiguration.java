@@ -6,6 +6,7 @@ import com.rabbitmq.client.Channel;
 import io.github.divios.airanchorgatewayjava.core.services.Receiver;
 import org.springframework.amqp.core.AcknowledgeMode;
 import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.rabbit.AsyncRabbitTemplate;
 import org.springframework.amqp.rabbit.annotation.EnableRabbit;
 import org.springframework.amqp.rabbit.connection.Connection;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
@@ -62,6 +63,10 @@ public class GatewayConfiguration {
         rabbitT.setMessageConverter(new Jackson2JsonMessageConverter());
 
         return rabbitT;
+    }
+
+    AsyncRabbitTemplate asyncRabbitTemplate(RabbitTemplate rabbitTemplate) {
+        return new AsyncRabbitTemplate(rabbitTemplate);
     }
 
 }

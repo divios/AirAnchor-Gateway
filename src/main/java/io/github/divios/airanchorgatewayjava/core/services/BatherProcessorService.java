@@ -10,6 +10,7 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import sawtooth.sdk.protobuf.ClientBatchSubmitResponse;
 import sawtooth.sdk.protobuf.Transaction;
@@ -40,26 +41,18 @@ public class BatherProcessorService {
     private Transactions2BatchListMapper transactions2BatchListMapper;
 
 
+    @SneakyThrows
+    @Async
     public void processBatch(List<BatchTransactionRequest> requests) {
         log.info("Getting petition to process {}", requests);
 
-        List<Transaction> transactions = new ArrayList<>(requests.size());
-
-        for (var request : requests) {
-            var certResponse = getCertificate(request);
-
-            var payload = transaction2PayloadMapper
-                    .map(request.getRequest(), certResponse);
-
-            var tr = payload2TransactionMapper.map(payload);
-            transactions.add(tr);
-        }
+        List<Transaction> transactions = mapRequestToTransactions(requests);
 
         var batchList = transactions2BatchListMapper.map(transactions);
         var responseFuture = zmqConnectionService.send(batchList);
 
         try {
-            var response = responseFuture.getResult();
+            var response = responseFuture.getResult(5L);
             var batchResponse = ClientBatchSubmitResponse.parseFrom(response);
 
             if (batchResponse.getStatus() == ClientBatchSubmitResponse.Status.OK) {
@@ -70,8 +63,28 @@ public class BatherProcessorService {
             }
 
         } catch (Exception e) {
+            var last = requests.get(requests.size() - 1);
+            last.getChannel().basicNack(last.getTag(), true, true);
             e.printStackTrace();
         }
+    }
+
+    private List<Transaction> mapRequestToTransactions(List<BatchTransactionRequest> requests) {
+        List<Transaction> transactions = new ArrayList<>(requests.size());
+
+        for (var request : requests) {
+
+            var certResponse = getCertificate(request);
+            if (certResponse == null)
+                continue;
+
+            var payload = transaction2PayloadMapper
+                    .map(request.getRequest(), certResponse);
+
+            var tr = payload2TransactionMapper.map(payload);
+            transactions.add(tr);
+        }
+        return transactions;
     }
 
     @SneakyThrows
@@ -85,6 +98,7 @@ public class BatherProcessorService {
             response = messageProcessorService.process(batchRequest.getRequest());
 
         } catch (InvalidRequestException e) {
+            log.error(e.getMessage());
             channel.basicReject(tag, false);            // Reject if invalid
 
         } catch (Exception e) {
