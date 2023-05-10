@@ -5,6 +5,7 @@ import io.github.divios.airanchorgatewayjava.core.mappers.Payload2TransactionMap
 import io.github.divios.airanchorgatewayjava.core.mappers.Transaction2PayloadMapper;
 import io.github.divios.airanchorgatewayjava.core.mappers.Transactions2BatchListMapper;
 import io.github.divios.airanchorgatewayjava.core.pojos.BatchTransactionRequest;
+import io.github.divios.airanchorgatewayjava.core.pojos.TransactionPayloadWrapper;
 import io.github.divios.airanchorgatewayjava.exceptions.InvalidRequestException;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
@@ -12,11 +13,12 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import sawtooth.sdk.messaging.Future;
 import sawtooth.sdk.protobuf.ClientBatchSubmitResponse;
-import sawtooth.sdk.protobuf.Transaction;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -27,6 +29,9 @@ public class BatherProcessorService {
 
     @Autowired
     private MessageProcessorService messageProcessorService;
+
+    @Autowired
+    private TransactionSubmittedCallbackService transactionSubmittedCallbackService;
 
     @Autowired
     private ZMQConnectionService zmqConnectionService;
@@ -41,25 +46,35 @@ public class BatherProcessorService {
     private Transactions2BatchListMapper transactions2BatchListMapper;
 
 
-    @SneakyThrows
     @Async
     public void processBatch(List<BatchTransactionRequest> requests) {
         log.info("Getting petition to process {}", requests);
 
-        List<Transaction> transactions = mapRequestToTransactions(requests);
+        var transactions = mapRequestToTransactions(requests);
+        var batches = transactions.stream()
+                .map(TransactionPayloadWrapper::getPayload)
+                .map(payload2TransactionMapper::map)
+                .collect(Collectors.toList());
 
-        var batchList = transactions2BatchListMapper.map(transactions);
+        if (transactions.isEmpty())             // skip if null
+            return;
+
+        var batchList = transactions2BatchListMapper.map(batches);
         var responseFuture = zmqConnectionService.send(batchList);
 
+        sendBatch(transactions, responseFuture);
+    }
+
+    @SneakyThrows
+    private void sendBatch(List<TransactionPayloadWrapper> requests, Future responseFuture) {
         try {
-            var response = responseFuture.getResult(5L);
+            var response = responseFuture.getResult(10L);
             var batchResponse = ClientBatchSubmitResponse.parseFrom(response);
 
             if (batchResponse.getStatus() == ClientBatchSubmitResponse.Status.OK) {
                 log.info("Resolved as ok");
 
-                var last = requests.get(requests.size() - 1);
-                last.getChannel().basicAck(last.getTag(), true);
+                transactionSubmittedCallbackService.startCallback(requests);
             }
 
         } catch (Exception e) {
@@ -69,20 +84,24 @@ public class BatherProcessorService {
         }
     }
 
-    private List<Transaction> mapRequestToTransactions(List<BatchTransactionRequest> requests) {
-        List<Transaction> transactions = new ArrayList<>(requests.size());
+    private List<TransactionPayloadWrapper> mapRequestToTransactions(List<BatchTransactionRequest> requests) {
+        List<TransactionPayloadWrapper> transactions = new ArrayList<>(requests.size());
 
-        for (var request : requests) {
+        for (var iterator = requests.iterator(); iterator.hasNext(); ) {
+            var request = iterator.next();
 
-            var certResponse = getCertificate(request);
-            if (certResponse == null)
+            var certResponse = getCertificate(request);     // request certificate
+            if (certResponse == null) {
+                iterator.remove();          // remove from list if fails
                 continue;
+            }
 
             var payload = transaction2PayloadMapper
                     .map(request.getRequest(), certResponse);
 
-            var tr = payload2TransactionMapper.map(payload);
-            transactions.add(tr);
+            transactions.add(
+                    new TransactionPayloadWrapper(payload, request.getChannel(), request.getTag())
+            );
         }
         return transactions;
     }
