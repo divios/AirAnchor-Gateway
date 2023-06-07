@@ -25,9 +25,6 @@ import java.util.stream.Collectors;
 public class BatherProcessorService {
 
     @Autowired
-    private RabbitTemplate rabbitTemplate;
-
-    @Autowired
     private MessageProcessorService messageProcessorService;
 
     @Autowired

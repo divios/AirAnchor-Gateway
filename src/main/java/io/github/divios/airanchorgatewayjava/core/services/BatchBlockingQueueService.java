@@ -4,9 +4,11 @@ import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.BlockingStrategy;
 import io.github.bucket4j.Bucket;
 import io.github.divios.airanchorgatewayjava.core.pojos.BatchTransactionRequest;
+import jakarta.annotation.PostConstruct;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -24,17 +26,25 @@ public class BatchBlockingQueueService {
     @Autowired
     private BatherProcessorService batherProcessorService;
 
-    private final Queue<BatchTransactionRequest> requestsQueue;
-    private final Bucket bucket;
+    @Value("${token.bucket.limit.seconds}")
+    private int tokenSecondsLimit;
 
-    {
+    @Value("${token.bucket.limit.minutes}")
+    private int tokenMinutesLimit;
+
+    @Value("${token.bucket.initial.tokens}")
+    private int initialTokens;
+
+    private Queue<BatchTransactionRequest> requestsQueue;
+    private Bucket bucket;
+
+    @PostConstruct
+    private void init() {
         requestsQueue = new ConcurrentLinkedDeque<>();
         bucket = Bucket.builder()
-                // allows 1000 tokens per 1 minute
-                .addLimit(Bandwidth.simple(1000, Duration.ofMinutes(1)))
-                // but not often then 15 tokens per 2 second
-                .addLimit(Bandwidth.simple(15, Duration.ofSeconds(2))
-                        .withInitialTokens(30))
+                .addLimit(Bandwidth.simple(tokenMinutesLimit, Duration.ofMinutes(1)))
+                .addLimit(Bandwidth.simple(tokenSecondsLimit, Duration.ofSeconds(1))
+                        .withInitialTokens(initialTokens))
                 .build();
     }
 

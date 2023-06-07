@@ -2,32 +2,32 @@ package io.github.divios.airanchorgatewayjava.core.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rabbitmq.client.Channel;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+import com.github.benmanes.caffeine.cache.Scheduler;
 import io.github.divios.airanchorgatewayjava.core.mappers.Payload2ModelMapper;
 import io.github.divios.airanchorgatewayjava.core.pojos.TransactionPayloadWrapper;
 import io.github.divios.airanchorgatewayjava.core.utils.CryptoUtils;
 import io.github.divios.airanchorgatewayjava.data.dao.LocationsDAO;
+import jakarta.annotation.PostConstruct;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.core.Message;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.CacheManager;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
 public class TransactionSubmittedCallbackService {
-
-    private static final ExecutorService executor = Executors.newCachedThreadPool();
-
-    @Autowired
-    private RabbitTemplate rabbitTemplate;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -41,34 +41,45 @@ public class TransactionSubmittedCallbackService {
     @Autowired
     private LocationsDAO locationsDAO;
 
+    @Value("${transaction.confirm.wait.time}")
+    private int expireTime;
+
+    private Cache<String, TransactionPayloadWrapper> cache;
+
+    @PostConstruct
+    private void init() {
+        cache = Caffeine.newBuilder()
+                .expireAfterWrite(expireTime, TimeUnit.MINUTES)
+                .removalListener(this::removalListener)
+                .build();
+    }
+
     @SneakyThrows
     public void startCallback(List<TransactionPayloadWrapper> transactions) {
         for (var transaction : transactions) {
             var hash = getHash(transaction);
-            var channel = transaction.getChannel();
-            var tag = transaction.getTag();
 
-            createQueue(channel, hash);
-
-            executor.submit(() -> receiveOnQueue(transaction, hash, channel, tag));
+            log.info("Waiting for validation for transaction with hash {}", hash);
+            cache.put(hash, transaction);
         }
     }
 
     @SneakyThrows
-    private void receiveOnQueue(TransactionPayloadWrapper payload, String hash, Channel channel, long tag) {
-        log.info("Waiting for validation for transaction with hash {}", hash);
-        Message response = rabbitTemplate.receive(hash, TimeUnit.SECONDS.toMillis(10));
+    @RabbitListener(queues = "gateway_callback_queue")
+    private void receiveOnQueue(String hash) {
 
-        if (response != null) {
-            log.info("Transaction with hash: {}, was confirmed", hash);
-            channel.basicAck(tag, false);
-            locationsDAO.save(payload2ModelMapper.map(payload.getPayload()));
-            channel.queueDelete(hash);
+        var response = cache.asMap().get(hash);
+        if (response == null)
+            return;
 
-        } else {
-            log.error("Transaction with hash: {}, was not confirmed, requeue...", hash);
-            channel.basicReject(tag, true);
-        }
+        var channel = response.getChannel();
+        var tag = response.getTag();
+
+        log.info("Transaction with hash: {}, was confirmed", hash);
+
+        channel.basicAck(tag, false);
+        locationsDAO.save(payload2ModelMapper.map(response.getPayload()));
+        cache.invalidate(hash);
     }
 
     private String getHash(TransactionPayloadWrapper transaction) throws JsonProcessingException {
@@ -76,9 +87,19 @@ public class TransactionSubmittedCallbackService {
     }
 
     @SneakyThrows
-    private void createQueue(Channel channel, String hash) {
-        channel.queueDeclare(hash, false, false, false, Map.of());
+    private void removalListener(Object key, Object value, RemovalCause cause) {
+        if (!cause.wasEvicted()) return;
+
+        var hash = (String) key;
+        var payload = (TransactionPayloadWrapper) value;
+
+        log.info("Transaction with hash: {}, was not confirmed", hash);
+        payload.getChannel().basicReject(payload.getTag(), true);
     }
 
+    @Scheduled(fixedDelay = 1000*10L)
+    void cleanUpCacheTask() {
+        cache.cleanUp();
+    }
 
 }
