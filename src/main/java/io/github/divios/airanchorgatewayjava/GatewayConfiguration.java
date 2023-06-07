@@ -15,6 +15,7 @@ import org.springframework.amqp.rabbit.listener.SimpleMessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.adapter.MessageListenerAdapter;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -26,6 +27,7 @@ import sawtooth.sdk.signing.CryptoFactory;
 @Configuration
 @EnableRabbit
 @EnableAsync
+@EnableCaching
 @EnableScheduling
 public class GatewayConfiguration {
 
@@ -55,6 +57,11 @@ public class GatewayConfiguration {
     @Bean
     Queue gatewayQueue() {
         return new Queue("gateway_queue", true);
+    }
+
+    @Bean
+    Queue gatewayCallbackQueue() {
+        return new Queue("gateway_callback_queue", true);
     }
 
     @Bean

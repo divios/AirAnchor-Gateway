@@ -35,8 +35,6 @@ public class Receiver {
 
         var batchRequest = BatchTransactionRequest.of(channel, tag, request);
         batchBlockingQueueService.submit(batchRequest);
-
-        //channel.basicNack(tag, false, false);
     }
 
     private TransactionRequest unmarshall(String message) {
